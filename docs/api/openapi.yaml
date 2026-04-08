@@ -1,0 +1,1128 @@
+openapi: 3.0.3
+info:
+  title: Distributed Real-Time Configuration Delivery API
+  version: 1.0.0
+  description: |
+    API для управления конфигурациями и секретами, версионирования, rollout,
+    rollback, diff и аудита в Distributed Real-Time Configuration Delivery Platform.
+
+    Явные допущения:
+    - ACK/Error от клиентских агентов не публикуются как внешний API.
+    - Auth-модель: JWT bearer token; role/ACL enforcement реализуется на сервере.
+servers:
+  - url: /
+    description: Production
+  - url: /
+    description: Staging
+
+tags:
+  - name: Services
+  - name: Configurations
+  - name: Versions
+  - name: Rollouts
+  - name: Audit
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/services:
+    get:
+      tags: [Services]
+      summary: Получить список сервисов
+      operationId: listServices
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Список сервисов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/services/{serviceId}/configs:
+    get:
+      tags: [Configurations]
+      summary: Получить конфигурации сервиса
+      operationId: listConfigsByService
+      parameters:
+        - $ref: '#/components/parameters/ServiceId'
+        - $ref: '#/components/parameters/Environment'
+        - $ref: '#/components/parameters/ConfigType'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Список конфигураций сервиса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/configs:
+    get:
+      tags: [Configurations]
+      summary: Получить список конфигураций с фильтрами
+      operationId: listConfigs
+      parameters:
+        - $ref: '#/components/parameters/ServiceIdQuery'
+        - $ref: '#/components/parameters/Environment'
+        - $ref: '#/components/parameters/ConfigType'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Список конфигураций
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Configurations]
+      summary: Создать конфигурацию
+      operationId: createConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConfigRequest'
+      responses:
+        '201':
+          description: Конфигурация создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigWithVersionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /v1/configs/{configId}:
+    get:
+      tags: [Configurations]
+      summary: Получить конфигурацию по ID
+      operationId: getConfigById
+      parameters:
+        - $ref: '#/components/parameters/ConfigId'
+        - $ref: '#/components/parameters/RevealSecret'
+      responses:
+        '200':
+          description: Конфигурация
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigWithVersionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Configurations]
+      summary: Обновить конфигурацию (создает новую версию)
+      operationId: updateConfig
+      parameters:
+        - $ref: '#/components/parameters/ConfigId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateConfigRequest'
+      responses:
+        '200':
+          description: Конфигурация обновлена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigWithVersionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Configurations]
+      summary: Удалить конфигурацию (soft-delete)
+      operationId: deleteConfig
+      parameters:
+        - $ref: '#/components/parameters/ConfigId'
+      responses:
+        '204':
+          description: Конфигурация удалена
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/configs/{configId}/versions:
+    get:
+      tags: [Versions]
+      summary: Получить историю версий конфигурации
+      operationId: listConfigVersions
+      parameters:
+        - $ref: '#/components/parameters/ConfigId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: История версий
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/configs/{configId}/versions/{version}:
+    get:
+      tags: [Versions]
+      summary: Получить конкретную версию конфигурации
+      operationId: getConfigVersion
+      parameters:
+        - $ref: '#/components/parameters/ConfigId'
+        - $ref: '#/components/parameters/Version'
+        - $ref: '#/components/parameters/RevealSecret'
+      responses:
+        '200':
+          description: Версия конфигурации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/configs/{configId}/rollback:
+    post:
+      tags: [Versions]
+      summary: Выполнить rollback на выбранную версию (создает новую)
+      operationId: rollbackConfig
+      parameters:
+        - $ref: '#/components/parameters/ConfigId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RollbackRequest'
+      responses:
+        '200':
+          description: Rollback выполнен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigWithVersionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/configs/{configId}/diff:
+    get:
+      tags: [Versions]
+      summary: Получить diff между двумя версиями
+      operationId: getConfigDiff
+      parameters:
+        - $ref: '#/components/parameters/ConfigId'
+        - name: fromVersion
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: toVersion
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        '200':
+          description: Diff между версиями
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiffResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/configs/{configId}/reconcile:
+    post:
+      tags: [Configurations]
+      summary: Сверка версии клиента с сервером
+      operationId: reconcileConfigVersion
+      parameters:
+        - $ref: '#/components/parameters/ConfigId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReconcileRequest'
+      responses:
+        '200':
+          description: Результат сверки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReconcileResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/configs/{configId}/rollouts:
+    post:
+      tags: [Rollouts]
+      summary: Запустить rollout
+      operationId: startRollout
+      parameters:
+        - $ref: '#/components/parameters/ConfigId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartRolloutRequest'
+      responses:
+        '201':
+          description: Rollout запущен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RolloutResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/rollouts/{rolloutId}:
+    get:
+      tags: [Rollouts]
+      summary: Получить rollout по ID
+      operationId: getRolloutById
+      parameters:
+        - $ref: '#/components/parameters/RolloutId'
+      responses:
+        '200':
+          description: Rollout
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RolloutResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/rollouts/{rolloutId}/stop:
+    post:
+      tags: [Rollouts]
+      summary: Остановить rollout
+      operationId: stopRollout
+      parameters:
+        - $ref: '#/components/parameters/RolloutId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StopRolloutRequest'
+      responses:
+        '200':
+          description: Rollout остановлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RolloutResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/rollouts/{rolloutId}/rollback:
+    post:
+      tags: [Rollouts]
+      summary: Откатить rollout
+      operationId: rollbackRollout
+      parameters:
+        - $ref: '#/components/parameters/RolloutId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RollbackRolloutRequest'
+      responses:
+        '200':
+          description: Rollout откатан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RolloutResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/audit/events:
+    get:
+      tags: [Audit]
+      summary: Поиск событий аудита
+      operationId: searchAuditEvents
+      parameters:
+        - $ref: '#/components/parameters/AuditServiceId'
+        - $ref: '#/components/parameters/AuditActorId'
+        - $ref: '#/components/parameters/AuditFrom'
+        - $ref: '#/components/parameters/AuditTo'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Список аудиторских событий
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ServiceId:
+      name: serviceId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ServiceIdQuery:
+      name: serviceId
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+    ConfigId:
+      name: configId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RolloutId:
+      name: rolloutId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Version:
+      name: version
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+    Environment:
+      name: environment
+      in: query
+      required: false
+      schema:
+        $ref: '#/components/schemas/EnvironmentCode'
+    ConfigType:
+      name: configType
+      in: query
+      required: false
+      schema:
+        $ref: '#/components/schemas/ConfigType'
+    RevealSecret:
+      name: revealSecret
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
+      description: |
+        Если true, сервер возвращает полный payload секрета только при наличии прав.
+        Иначе возвращается masked representation.
+    AuditServiceId:
+      name: serviceId
+      in: query
+      required: false
+      schema:
+        type: string
+        format: uuid
+    AuditActorId:
+      name: actorId
+      in: query
+      required: false
+      schema:
+        type: string
+    AuditFrom:
+      name: from
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+    AuditTo:
+      name: to
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 50
+
+  responses:
+    BadRequest:
+      description: Ошибка валидации запроса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Неавторизованный запрос
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Недостаточно прав
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Ресурс не найден
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Конфликт состояния (например, дублирующий ключ)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    EnvironmentCode:
+      type: string
+      enum: [dev, stage, prod]
+
+    ConfigType:
+      type: string
+      enum: [config, secret]
+
+    ConfigFormat:
+      type: string
+      enum: [kv, json, yaml]
+
+    RolloutStrategy:
+      type: string
+      enum: [instant, gradual, canary]
+
+    RolloutStatus:
+      type: string
+      enum: [pending, running, paused, stopped, rolled_back, completed, failed]
+
+    BaseConfig:
+      type: object
+      required:
+        - id
+        - serviceId
+        - environment
+        - configKey
+        - configType
+        - format
+        - currentVersion
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        serviceId:
+          type: string
+          format: uuid
+        environment:
+          $ref: '#/components/schemas/EnvironmentCode'
+        configKey:
+          type: string
+        configType:
+          $ref: '#/components/schemas/ConfigType'
+        format:
+          $ref: '#/components/schemas/ConfigFormat'
+        status:
+          type: string
+          enum: [active, deleted]
+        currentVersion:
+          type: integer
+          format: int64
+          minimum: 0
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    VersionPayload:
+      type: object
+      description: |
+        Унифицированное представление полезной нагрузки.
+        Для secret без прав может содержать masked данные.
+      additionalProperties: true
+
+    VersionInfo:
+      type: object
+      required:
+        - version
+        - changeType
+        - createdBy
+        - createdAt
+      properties:
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        changeType:
+          type: string
+          enum: [create, update, rollback, delete]
+        changeReason:
+          type: string
+          nullable: true
+        createdBy:
+          type: string
+        sourceIp:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    ConfigWithVersionResponse:
+      type: object
+      required:
+        - config
+        - latestVersion
+      properties:
+        config:
+          $ref: '#/components/schemas/BaseConfig'
+        latestVersion:
+          $ref: '#/components/schemas/VersionResponse'
+
+    VersionResponse:
+      type: object
+      required:
+        - configId
+        - version
+        - changeType
+        - payload
+        - createdBy
+        - createdAt
+      properties:
+        configId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        changeType:
+          type: string
+          enum: [create, update, rollback, delete]
+        changeReason:
+          type: string
+          nullable: true
+        payload:
+          $ref: '#/components/schemas/VersionPayload'
+        payloadHash:
+          type: string
+        createdBy:
+          type: string
+        sourceIp:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateConfigRequest:
+      type: object
+      required:
+        - serviceId
+        - environment
+        - configKey
+        - configType
+        - format
+        - payload
+      properties:
+        serviceId:
+          type: string
+          format: uuid
+        environment:
+          $ref: '#/components/schemas/EnvironmentCode'
+        configKey:
+          type: string
+          minLength: 1
+          maxLength: 255
+        configType:
+          $ref: '#/components/schemas/ConfigType'
+        format:
+          $ref: '#/components/schemas/ConfigFormat'
+        payload:
+          $ref: '#/components/schemas/VersionPayload'
+        changeReason:
+          type: string
+          nullable: true
+
+    UpdateConfigRequest:
+      type: object
+      required:
+        - payload
+      properties:
+        payload:
+          $ref: '#/components/schemas/VersionPayload'
+        changeReason:
+          type: string
+          nullable: true
+
+    RollbackRequest:
+      type: object
+      required:
+        - targetVersion
+      properties:
+        targetVersion:
+          type: integer
+          format: int64
+          minimum: 1
+        reason:
+          type: string
+          nullable: true
+
+    DiffOperation:
+      type: object
+      required:
+        - op
+        - path
+      properties:
+        op:
+          type: string
+          enum: [add, remove, replace]
+        path:
+          type: string
+        fromValue:
+          nullable: true
+        toValue:
+          nullable: true
+
+    DiffResponse:
+      type: object
+      required:
+        - configId
+        - fromVersion
+        - toVersion
+        - operations
+      properties:
+        configId:
+          type: string
+          format: uuid
+        fromVersion:
+          type: integer
+          format: int64
+        toVersion:
+          type: integer
+          format: int64
+        operations:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiffOperation'
+
+    ReconcileRequest:
+      type: object
+      required:
+        - clientId
+        - clientVersion
+      properties:
+        clientId:
+          type: string
+          description: Идентификатор клиентского агента/инстанса
+        clientVersion:
+          type: integer
+          format: int64
+          minimum: 0
+
+    ReconcileResponse:
+      type: object
+      required:
+        - configId
+        - clientVersion
+        - serverVersion
+        - inSync
+        - action
+      properties:
+        configId:
+          type: string
+          format: uuid
+        clientVersion:
+          type: integer
+          format: int64
+        serverVersion:
+          type: integer
+          format: int64
+        inSync:
+          type: boolean
+        action:
+          type: string
+          enum: [none, recovery, snapshot]
+          description: |
+            recovery — возможен catch-up в окне history/recovery;
+            snapshot — требуется полная загрузка актуальной версии.
+        version:
+          $ref: '#/components/schemas/VersionResponse'
+
+    StartRolloutRequest:
+      type: object
+      required:
+        - targetVersion
+        - strategy
+      properties:
+        targetVersion:
+          type: integer
+          format: int64
+          minimum: 1
+        strategy:
+          $ref: '#/components/schemas/RolloutStrategy'
+        percentage:
+          type: integer
+          minimum: 0
+          maximum: 100
+          nullable: true
+          description: Используется для strategy=gradual
+        criteria:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: Критерии отбора клиентов для canary/gradual
+
+    StopRolloutRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          nullable: true
+
+    RollbackRolloutRequest:
+      type: object
+      properties:
+        rollbackToVersion:
+          type: integer
+          format: int64
+          minimum: 1
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+
+    RolloutResponse:
+      type: object
+      required:
+        - id
+        - configId
+        - targetVersion
+        - strategy
+        - status
+        - startedBy
+        - startedAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        configId:
+          type: string
+          format: uuid
+        targetVersion:
+          type: integer
+          format: int64
+          minimum: 1
+        strategy:
+          $ref: '#/components/schemas/RolloutStrategy'
+        status:
+          $ref: '#/components/schemas/RolloutStatus'
+        percentage:
+          type: integer
+          minimum: 0
+          maximum: 100
+          nullable: true
+        criteria:
+          type: object
+          nullable: true
+          additionalProperties: true
+        rollbackToVersion:
+          type: integer
+          format: int64
+          nullable: true
+        startedBy:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        stoppedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    Service:
+      type: object
+      required:
+        - id
+        - name
+        - namespace
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        namespace:
+          type: string
+        description:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    AuditEvent:
+      type: object
+      required:
+        - id
+        - operation
+        - entityType
+        - actorId
+        - actorType
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        operation:
+          type: string
+        entityType:
+          type: string
+        entityId:
+          type: string
+          format: uuid
+          nullable: true
+        serviceId:
+          type: string
+          format: uuid
+          nullable: true
+        configId:
+          type: string
+          format: uuid
+          nullable: true
+        version:
+          type: integer
+          format: int64
+          nullable: true
+        actorId:
+          type: string
+        actorType:
+          type: string
+          enum: [user, service]
+        sourceIp:
+          type: string
+          nullable: true
+        correlationId:
+          type: string
+          nullable: true
+        diff:
+          type: object
+          nullable: true
+          additionalProperties: true
+        meta:
+          type: object
+          nullable: true
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+
+    Pagination:
+      type: object
+      required:
+        - page
+        - pageSize
+        - total
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+
+    ServiceListResponse:
+      type: object
+      required:
+        - items
+        - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Service'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    ConfigListResponse:
+      type: object
+      required:
+        - items
+        - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BaseConfig'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    VersionListResponse:
+      type: object
+      required:
+        - items
+        - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/VersionInfo'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    AuditListResponse:
+      type: object
+      required:
+        - items
+        - pagination
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              example: Request payload is invalid
+            details:
+              type: object
+              nullable: true
+              additionalProperties: true
