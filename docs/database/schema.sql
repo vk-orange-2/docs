@@ -1,9 +1,9 @@
 -- PostgreSQL DDL for Distributed Real-Time Configuration Delivery Platform
--- Scope: requirements.md (backend + agent contracts)
+-- Rewritten from scratch according to updated requirements.md
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
--- 1. Environment dictionary
+-- 1) Environment dictionary
 CREATE TABLE IF NOT EXISTS environments (
     id SMALLINT PRIMARY KEY,
     code TEXT NOT NULL UNIQUE CHECK (code IN ('dev', 'stage', 'prod')),
@@ -17,9 +17,10 @@ VALUES
     (3, 'prod', 'Production')
 ON CONFLICT (id) DO NOTHING;
 
--- 2. Services
+-- 2) Services
 CREATE TABLE IF NOT EXISTS services (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    service_key TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL UNIQUE,
     namespace TEXT NOT NULL,
     description TEXT,
@@ -27,14 +28,14 @@ CREATE TABLE IF NOT EXISTS services (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 3. Configs
+-- 3) Configs
 CREATE TABLE IF NOT EXISTS configs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     service_id UUID NOT NULL REFERENCES services(id),
     environment_id SMALLINT NOT NULL REFERENCES environments(id),
     config_key TEXT NOT NULL,
-    config_type TEXT NOT NULL CHECK (config_type IN ('config', 'secret')),
-    format TEXT NOT NULL CHECK (format IN ('kv', 'json', 'yaml')),
+    is_secret BOOLEAN NOT NULL DEFAULT false,
+    format TEXT NOT NULL CHECK (format IN ('kv', 'json')),
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'deleted')),
     current_version BIGINT NOT NULL DEFAULT 0 CHECK (current_version >= 0),
     created_by TEXT NOT NULL,
@@ -47,7 +48,7 @@ CREATE TABLE IF NOT EXISTS configs (
 CREATE INDEX IF NOT EXISTS idx_configs_service_env ON configs(service_id, environment_id);
 CREATE INDEX IF NOT EXISTS idx_configs_env ON configs(environment_id);
 
--- 4. Immutable version history
+-- 4) Immutable version history
 CREATE TABLE IF NOT EXISTS config_versions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     config_id UUID NOT NULL REFERENCES configs(id) ON DELETE CASCADE,
@@ -57,43 +58,49 @@ CREATE TABLE IF NOT EXISTS config_versions (
     is_secret BOOLEAN NOT NULL DEFAULT false,
     encrypted_payload BYTEA,
     encryption_key_ref TEXT,
-    change_reason TEXT,
     change_type TEXT NOT NULL CHECK (change_type IN ('create', 'update', 'rollback', 'delete')),
+    change_reason TEXT,
     created_by TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     source_ip INET,
+    correlation_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_config_versions_config_version UNIQUE (config_id, version),
     CONSTRAINT chk_secret_payload_consistency CHECK (
-        (is_secret = true AND encrypted_payload IS NOT NULL)
-        OR
         (is_secret = false)
+        OR
+        (is_secret = true AND encrypted_payload IS NOT NULL)
     )
 );
 
-CREATE INDEX IF NOT EXISTS idx_config_versions_config_ver_desc ON config_versions(config_id, version DESC);
-CREATE INDEX IF NOT EXISTS idx_config_versions_created_at ON config_versions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_config_versions_config_ver_desc
+    ON config_versions(config_id, version DESC);
+CREATE INDEX IF NOT EXISTS idx_config_versions_created_at
+    ON config_versions(created_at DESC);
 
--- 5. Rollout state
+-- 5) Rollout state
 CREATE TABLE IF NOT EXISTS rollouts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     config_id UUID NOT NULL REFERENCES configs(id) ON DELETE CASCADE,
+    baseline_version BIGINT NOT NULL CHECK (baseline_version > 0),
     target_version BIGINT NOT NULL CHECK (target_version > 0),
     strategy TEXT NOT NULL CHECK (strategy IN ('instant', 'gradual', 'canary')),
     status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'paused', 'stopped', 'rolled_back', 'completed', 'failed')),
     criteria JSONB,
     percentage SMALLINT,
+    rollback_to_version BIGINT,
     started_by TEXT NOT NULL,
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     stopped_at TIMESTAMPTZ,
-    rollback_to_version BIGINT,
     CONSTRAINT chk_rollout_percentage CHECK (percentage IS NULL OR (percentage >= 0 AND percentage <= 100))
 );
 
-CREATE INDEX IF NOT EXISTS idx_rollouts_config_started_at ON rollouts(config_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_rollouts_status ON rollouts(status);
+CREATE INDEX IF NOT EXISTS idx_rollouts_config_started_at
+    ON rollouts(config_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rollouts_status
+    ON rollouts(status);
 
--- 6. Transactional outbox for delivery publisher
+-- 6) Delivery outbox with retry/dead support
 CREATE TABLE IF NOT EXISTS delivery_outbox (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     config_id UUID NOT NULL REFERENCES configs(id) ON DELETE CASCADE,
@@ -104,63 +111,68 @@ CREATE TABLE IF NOT EXISTS delivery_outbox (
     status TEXT NOT NULL CHECK (status IN ('pending', 'publishing', 'published', 'failed', 'dead')),
     attempt_count INT NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     next_attempt_at TIMESTAMPTZ,
+    last_attempt_at TIMESTAMPTZ,
     last_error TEXT,
+    last_error_code TEXT,
+    last_error_http_status INT,
     published_at TIMESTAMPTZ,
+    dead_at TIMESTAMPTZ,
+    dead_reason TEXT,
+    redrive_count INT NOT NULL DEFAULT 0 CHECK (redrive_count >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT uq_delivery_outbox_cfg_ver_event UNIQUE (config_id, version, event_type)
+    CONSTRAINT uq_delivery_outbox_cfg_ver_event UNIQUE (config_id, version, event_type),
+    CONSTRAINT chk_dead_fields CHECK (
+        (status <> 'dead')
+        OR
+        (status = 'dead' AND dead_at IS NOT NULL)
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_delivery_outbox_status_next_attempt
     ON delivery_outbox(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_delivery_outbox_created_at
     ON delivery_outbox(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_delivery_outbox_dead
+    ON delivery_outbox(dead_at)
+    WHERE status = 'dead';
 
--- 7. Client agents
-CREATE TABLE IF NOT EXISTS client_agents (
+-- 7) Re-drive history for dead events
+CREATE TABLE IF NOT EXISTS delivery_redrive_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    agent_uid TEXT NOT NULL UNIQUE,
+    outbox_id UUID NOT NULL REFERENCES delivery_outbox(id) ON DELETE CASCADE,
+    trigger_type TEXT NOT NULL CHECK (trigger_type IN ('manual', 'scheduled')),
+    triggered_by TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at TIMESTAMPTZ,
+    result TEXT NOT NULL CHECK (result IN ('success', 'failed', 'skipped')),
+    attempts_before INT NOT NULL CHECK (attempts_before >= 0),
+    attempts_after INT CHECK (attempts_after IS NULL OR attempts_after >= 0),
+    note TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_redrive_log_outbox_started_at
+    ON delivery_redrive_log(outbox_id, started_at DESC);
+
+-- 8) Client apply feedback (ACK/NACK) without persistent agent registry
+CREATE TABLE IF NOT EXISTS client_apply_feedback (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     service_id UUID NOT NULL REFERENCES services(id),
     environment_id SMALLINT NOT NULL REFERENCES environments(id),
-    metadata JSONB,
-    last_seen_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_client_agents_service_env
-    ON client_agents(service_id, environment_id);
-
--- 8. Agent applied-state for reconciliation and lag detection
-CREATE TABLE IF NOT EXISTS agent_config_state (
-    agent_id UUID NOT NULL REFERENCES client_agents(id) ON DELETE CASCADE,
-    config_id UUID NOT NULL REFERENCES configs(id) ON DELETE CASCADE,
-    applied_version BIGINT NOT NULL CHECK (applied_version >= 0),
-    apply_status TEXT NOT NULL CHECK (apply_status IN ('applied', 'rejected', 'pending')),
-    last_error TEXT,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (agent_id, config_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_config_state_config_applied
-    ON agent_config_state(config_id, applied_version);
-
--- 9. Delivery receipts (internal ACK/ERROR tracking)
-CREATE TABLE IF NOT EXISTS delivery_receipts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     config_id UUID NOT NULL REFERENCES configs(id) ON DELETE CASCADE,
     version BIGINT NOT NULL CHECK (version > 0),
-    agent_id UUID NOT NULL REFERENCES client_agents(id) ON DELETE CASCADE,
-    receipt_status TEXT NOT NULL CHECK (receipt_status IN ('applied', 'rejected')),
+    status TEXT NOT NULL CHECK (status IN ('applied', 'rejected')),
     error_message TEXT,
-    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT uq_delivery_receipt_cfg_ver_agent UNIQUE (config_id, version, agent_id)
+    source_ip INET,
+    correlation_id TEXT,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_delivery_receipts_config_ver
-    ON delivery_receipts(config_id, version);
-CREATE INDEX IF NOT EXISTS idx_delivery_receipts_agent
-    ON delivery_receipts(agent_id, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_client_apply_feedback_cfg_ver_time
+    ON client_apply_feedback(config_id, version, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_client_apply_feedback_service_env_time
+    ON client_apply_feedback(service_id, environment_id, received_at DESC);
 
--- 10. Audit log
+-- 9) Audit log
 CREATE TABLE IF NOT EXISTS audit_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     operation TEXT NOT NULL,
@@ -187,5 +199,6 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_created_at
 CREATE INDEX IF NOT EXISTS idx_audit_log_config_created_at
     ON audit_log(config_id, created_at DESC);
 
--- Optional: retention helpers (policy execution remains external, e.g. pg_cron)
--- Example target: keep >= 1 year versions/audit as per requirements.
+-- Notes:
+-- - Reconciliation is stateless; no client_agents/agent_config_state tables.
+-- - Channel naming policy (service:{service_key}:{environment}) is formed in application logic.
