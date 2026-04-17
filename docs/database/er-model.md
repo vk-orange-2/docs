@@ -15,7 +15,6 @@
 - `id` (UUID, PK) — уникальный идентификатор сервиса.
 - `service_key` (TEXT, UNIQUE, NOT NULL) — стабильный ключ сервиса для каналов доставки.
 - `name` (TEXT, UNIQUE, NOT NULL) — отображаемое имя сервиса.
-- `namespace` (TEXT, NOT NULL) — логическая область изоляции/шардинга.
 - `description` (TEXT, NULL) — описание сервиса.
 - `created_at` (TIMESTAMPTZ, NOT NULL) — время создания.
 - `updated_at` (TIMESTAMPTZ, NOT NULL) — время изменения.
@@ -24,7 +23,7 @@
 
 ### 2) `environments`
 - `id` (SMALLINT, PK) — технический идентификатор окружения.
-- `code` (TEXT, UNIQUE, NOT NULL) — код окружения (`dev`, `stage`, `prod`).
+- `code` (TEXT, UNIQUE, NOT NULL) — код окружения (`dev`, `stage`, `prod`, `test`).
 - `name` (TEXT, NOT NULL) — отображаемое имя.
 
 Назначение: фиксированный справочник окружений.
@@ -35,7 +34,7 @@
 - `environment_id` (SMALLINT, FK -> `environments.id`, NOT NULL) — окружение.
 - `config_key` (TEXT, NOT NULL) — ключ конфигурации в рамках `service+environment`.
 - `is_secret` (BOOLEAN, NOT NULL, default `false`) — признак секретности.
-- `format` (TEXT, NOT NULL) — формат payload: `kv|json`.
+- `format` (TEXT, NOT NULL) — формат payload: `json`.
 - `status` (TEXT, NOT NULL) — `active|deleted` (soft delete).
 - `current_version` (BIGINT, NOT NULL, default `0`) — текущая актуальная версия.
 - `created_by` (TEXT, NOT NULL) — инициатор создания.
