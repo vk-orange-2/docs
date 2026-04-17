@@ -16,16 +16,13 @@ Distributed Real-Time Configuration Delivery Platform управляет кон�
 ```mermaid
 flowchart LR
     U["Platform Engineer / Developer"]
-    CI["Service Account / CI-CD"]
     A["Client Service + Config Agent/SDK"]
     K["Keycloak (External IdP)"]
 
     S["Configuration Delivery Platform\n(Система в scope)"]
 
     U -->|"CRUD, версии, rollback, audit"| S
-    CI -->|"Автоматические обновления конфигураций"| S
     S -->|"Push-обновления конфигураций"| A
-    A -->|"Подтверждение применения (ACK)"| S
     S -->|"Проверка JWT / roles claims"| K
 ```
 

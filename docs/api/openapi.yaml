@@ -1,21 +1,22 @@
 openapi: 3.0.3
 info:
   title: Distributed Real-Time Configuration Delivery API
-  version: 1.0.0
+  version: 2.0.0
   description: |
-    API для управления конфигурациями и секретами, версионирования, rollout,
-    rollback, diff и аудита в Distributed Real-Time Configuration Delivery Platform.
+    API для управления конфигурациями, версиями, rollout и reconciliation.
 
-    Явные допущения:
-    - ACK/Error от клиентских агентов не публикуются как внешний API.
-    - Auth-модель: JWT bearer token; role/ACL enforcement реализуется на сервере.
+    Актуализация под текущие требования:
+    - формат конфигурации: `kv` и `json`;
+    - секретность задается флагом `isSecret`;
+    - `rollback rollout` выполняет глобальный rollback конфигурации на baseline rollout;
+    - reconciliation выполняется stateless, без постоянного идентификатора агента.
+
 servers:
   - url: /
-    description: Production
-  - url: /
-    description: Staging
+    description: Default
 
 tags:
+  - name: Ops
   - name: Services
   - name: Configurations
   - name: Versions
@@ -26,6 +27,40 @@ security:
   - bearerAuth: []
 
 paths:
+  /health:
+    get:
+      tags: [Ops]
+      summary: Liveness probe
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /ready:
+    get:
+      tags: [Ops]
+      summary: Readiness probe
+      operationId: ready
+      security: []
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service is not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /v1/services:
     get:
       tags: [Services]
@@ -43,6 +78,8 @@ paths:
                 $ref: '#/components/schemas/ServiceListResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/services/{serviceId}/configs:
     get:
@@ -52,7 +89,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/ServiceId'
         - $ref: '#/components/parameters/Environment'
-        - $ref: '#/components/parameters/ConfigType'
+        - $ref: '#/components/parameters/IsSecret'
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/PageSize'
       responses:
@@ -66,16 +103,18 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/configs:
     get:
       tags: [Configurations]
-      summary: Получить список конфигураций с фильтрами
+      summary: Получить список конфигураций
       operationId: listConfigs
       parameters:
         - $ref: '#/components/parameters/ServiceIdQuery'
         - $ref: '#/components/parameters/Environment'
-        - $ref: '#/components/parameters/ConfigType'
+        - $ref: '#/components/parameters/IsSecret'
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/PageSize'
       responses:
@@ -87,6 +126,8 @@ paths:
                 $ref: '#/components/schemas/ConfigListResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
     post:
       tags: [Configurations]
       summary: Создать конфигурацию
@@ -112,6 +153,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/configs/{configId}:
     get:
@@ -134,6 +177,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
     put:
       tags: [Configurations]
       summary: Обновить конфигурацию (создает новую версию)
@@ -161,6 +206,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
     delete:
       tags: [Configurations]
       summary: Удалить конфигурацию (soft-delete)
@@ -176,6 +223,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/configs/{configId}/versions:
     get:
@@ -197,6 +246,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/configs/{configId}/versions/{version}:
     get:
@@ -220,11 +271,14 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/configs/{configId}/rollback:
     post:
       tags: [Versions]
-      summary: Выполнить rollback на выбранную версию (создает новую)
+      summary: Глобальный rollback конфигурации на предыдущую версию
+      description: Создает новую версию конфигурации с payload из targetVersion.
       operationId: rollbackConfig
       parameters:
         - $ref: '#/components/parameters/ConfigId'
@@ -233,7 +287,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RollbackRequest'
+              $ref: '#/components/schemas/RollbackConfigRequest'
       responses:
         '200':
           description: Rollback выполнен
@@ -249,6 +303,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/configs/{configId}/diff:
     get:
@@ -284,11 +340,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/configs/{configId}/reconcile:
     post:
       tags: [Configurations]
       summary: Сверка версии клиента с сервером
+      description: |
+        Stateless reconciliation.
+        Агент передает только текущую примененную версию (без постоянного agent ID).
       operationId: reconcileConfigVersion
       parameters:
         - $ref: '#/components/parameters/ConfigId'
@@ -311,6 +372,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/configs/{configId}/rollouts:
     post:
@@ -340,6 +403,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/rollouts/{rolloutId}:
     get:
@@ -359,11 +424,13 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/rollouts/{rolloutId}/stop:
     post:
       tags: [Rollouts]
-      summary: Остановить rollout
+      summary: Остановить rollout (без изменения текущей глобальной версии)
       operationId: stopRollout
       parameters:
         - $ref: '#/components/parameters/RolloutId'
@@ -386,11 +453,16 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/rollouts/{rolloutId}/rollback:
     post:
       tags: [Rollouts]
-      summary: Откатить rollout
+      summary: Rollback rollout (глобальный rollback конфигурации на baseline rollout)
+      description: |
+        Операция определяет baseline rollout и инициирует эквивалент глобального rollback конфигурации.
+        В результате создается новая версия конфигурации, rollout переходит в status=rolled_back.
       operationId: rollbackRollout
       parameters:
         - $ref: '#/components/parameters/RolloutId'
@@ -406,13 +478,15 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RolloutResponse'
+                $ref: '#/components/schemas/RollbackRolloutResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /v1/audit/events:
     get:
@@ -435,6 +509,8 @@ paths:
                 $ref: '#/components/schemas/AuditListResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
 components:
   securitySchemes:
@@ -486,12 +562,12 @@ components:
       required: false
       schema:
         $ref: '#/components/schemas/EnvironmentCode'
-    ConfigType:
-      name: configType
+    IsSecret:
+      name: isSecret
       in: query
       required: false
       schema:
-        $ref: '#/components/schemas/ConfigType'
+        type: boolean
     RevealSecret:
       name: revealSecret
       in: query
@@ -573,7 +649,19 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     Conflict:
-      description: Конфликт состояния (например, дублирующий ключ)
+      description: Конфликт состояния
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    TooManyRequests:
+      description: Превышен лимит запросов
+      headers:
+        Retry-After:
+          description: Секунды до безопасного повтора запроса
+          schema:
+            type: integer
+            minimum: 1
       content:
         application/json:
           schema:
@@ -584,13 +672,9 @@ components:
       type: string
       enum: [dev, stage, prod]
 
-    ConfigType:
-      type: string
-      enum: [config, secret]
-
     ConfigFormat:
       type: string
-      enum: [kv, json, yaml]
+      enum: [kv, json]
 
     RolloutStrategy:
       type: string
@@ -600,6 +684,10 @@ components:
       type: string
       enum: [pending, running, paused, stopped, rolled_back, completed, failed]
 
+    ReconcileAction:
+      type: string
+      enum: [none, recovery, snapshot]
+
     BaseConfig:
       type: object
       required:
@@ -607,7 +695,7 @@ components:
         - serviceId
         - environment
         - configKey
-        - configType
+        - isSecret
         - format
         - currentVersion
         - status
@@ -624,8 +712,8 @@ components:
           $ref: '#/components/schemas/EnvironmentCode'
         configKey:
           type: string
-        configType:
-          $ref: '#/components/schemas/ConfigType'
+        isSecret:
+          type: boolean
         format:
           $ref: '#/components/schemas/ConfigFormat'
         status:
@@ -646,9 +734,6 @@ components:
 
     VersionPayload:
       type: object
-      description: |
-        Унифицированное представление полезной нагрузки.
-        Для secret без прав может содержать masked данные.
       additionalProperties: true
 
     VersionInfo:
@@ -666,12 +751,59 @@ components:
         changeType:
           type: string
           enum: [create, update, rollback, delete]
+        isSecret:
+          type: boolean
         changeReason:
           type: string
           nullable: true
         createdBy:
           type: string
         sourceIp:
+          type: string
+          nullable: true
+        correlationId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    VersionResponse:
+      type: object
+      required:
+        - configId
+        - version
+        - changeType
+        - isSecret
+        - payload
+        - createdBy
+        - createdAt
+      properties:
+        configId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+        changeType:
+          type: string
+          enum: [create, update, rollback, delete]
+        isSecret:
+          type: boolean
+        changeReason:
+          type: string
+          nullable: true
+        payload:
+          $ref: '#/components/schemas/VersionPayload'
+        payloadHash:
+          type: string
+        createdBy:
+          type: string
+        sourceIp:
+          type: string
+          nullable: true
+        correlationId:
           type: string
           nullable: true
         createdAt:
@@ -689,49 +821,12 @@ components:
         latestVersion:
           $ref: '#/components/schemas/VersionResponse'
 
-    VersionResponse:
-      type: object
-      required:
-        - configId
-        - version
-        - changeType
-        - payload
-        - createdBy
-        - createdAt
-      properties:
-        configId:
-          type: string
-          format: uuid
-        version:
-          type: integer
-          format: int64
-          minimum: 1
-        changeType:
-          type: string
-          enum: [create, update, rollback, delete]
-        changeReason:
-          type: string
-          nullable: true
-        payload:
-          $ref: '#/components/schemas/VersionPayload'
-        payloadHash:
-          type: string
-        createdBy:
-          type: string
-        sourceIp:
-          type: string
-          nullable: true
-        createdAt:
-          type: string
-          format: date-time
-
     CreateConfigRequest:
       type: object
       required:
         - serviceId
         - environment
         - configKey
-        - configType
         - format
         - payload
       properties:
@@ -744,8 +839,9 @@ components:
           type: string
           minLength: 1
           maxLength: 255
-        configType:
-          $ref: '#/components/schemas/ConfigType'
+        isSecret:
+          type: boolean
+          default: false
         format:
           $ref: '#/components/schemas/ConfigFormat'
         payload:
@@ -765,7 +861,7 @@ components:
           type: string
           nullable: true
 
-    RollbackRequest:
+    RollbackConfigRequest:
       type: object
       required:
         - targetVersion
@@ -819,12 +915,8 @@ components:
     ReconcileRequest:
       type: object
       required:
-        - clientId
         - clientVersion
       properties:
-        clientId:
-          type: string
-          description: Идентификатор клиентского агента/инстанса
         clientVersion:
           type: integer
           format: int64
@@ -851,12 +943,8 @@ components:
         inSync:
           type: boolean
         action:
-          type: string
-          enum: [none, recovery, snapshot]
-          description: |
-            recovery — возможен catch-up в окне history/recovery;
-            snapshot — требуется полная загрузка актуальной версии.
-        version:
+          $ref: '#/components/schemas/ReconcileAction'
+        latestVersion:
           $ref: '#/components/schemas/VersionResponse'
 
     StartRolloutRequest:
@@ -881,7 +969,6 @@ components:
           type: object
           nullable: true
           additionalProperties: true
-          description: Критерии отбора клиентов для canary/gradual
 
     StopRolloutRequest:
       type: object
@@ -893,11 +980,6 @@ components:
     RollbackRolloutRequest:
       type: object
       properties:
-        rollbackToVersion:
-          type: integer
-          format: int64
-          minimum: 1
-          nullable: true
         reason:
           type: string
           nullable: true
@@ -907,6 +989,7 @@ components:
       required:
         - id
         - configId
+        - baselineVersion
         - targetVersion
         - strategy
         - status
@@ -920,6 +1003,10 @@ components:
         configId:
           type: string
           format: uuid
+        baselineVersion:
+          type: integer
+          format: int64
+          minimum: 1
         targetVersion:
           type: integer
           format: int64
@@ -954,10 +1041,22 @@ components:
           format: date-time
           nullable: true
 
+    RollbackRolloutResponse:
+      type: object
+      required:
+        - rollout
+        - rollbackVersion
+      properties:
+        rollout:
+          $ref: '#/components/schemas/RolloutResponse'
+        rollbackVersion:
+          $ref: '#/components/schemas/VersionResponse'
+
     Service:
       type: object
       required:
         - id
+        - serviceKey
         - name
         - namespace
         - createdAt
@@ -966,6 +1065,8 @@ components:
         id:
           type: string
           format: uuid
+        serviceKey:
+          type: string
         name:
           type: string
         namespace:
@@ -1105,6 +1206,18 @@ components:
         pagination:
           $ref: '#/components/schemas/Pagination'
 
+    HealthResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        timestamp:
+          type: string
+          format: date-time
+
     ErrorResponse:
       type: object
       required:
@@ -1122,6 +1235,9 @@ components:
             message:
               type: string
               example: Request payload is invalid
+            correlationId:
+              type: string
+              nullable: true
             details:
               type: object
               nullable: true
